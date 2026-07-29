@@ -1,0 +1,574 @@
+
+{
+  "name": "LinkedIn Job Triage + Resume Builder (SANITIZED - Safe to Share)",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -720,
+        -140
+      ],
+      "id": "3a4a7a84-62fa-4f7b-a7f8-9c679c9a7f3a",
+      "name": "Start (Manual)"
+    },
+    {
+      "parameters": {
+        "operation": "Run actor and get dataset",
+        "actorId": {
+          "__rl": true,
+          "value": "zn01OAlzP853oqn4Z",
+          "mode": "list",
+          "cachedResultName": "Advanced Linkedin Job Scraper (No Cookies) (harvestapi/linkedin-job-search)",
+          "cachedResultUrl": "https://console.apify.com/actors/zn01OAlzP853oqn4Z/input"
+        },
+        "customBody": "{\n  \"easyApply\": true,\n  \"employmentType\": [\"full-time\", \"contract\"],\n  \"experienceLevel\": [\"entry\"],\n  \"jobTitles\": [\"AI\", \"Project Coordinator\", \"Automation\", \"Workflow\", \"Consultant\"],\n  \"locations\": [\"Canada\"],\n  \"maxItems\": 10,\n  \"sortBy\": \"date\",\n  \"under10Applicants\": false,\n  \"workplaceType\": [\"remote\", \"hybrid\"]\n}"
+      },
+      "type": "@apify/n8n-nodes-apify.apify",
+      "typeVersion": 1,
+      "position": [
+        -500,
+        -140
+      ],
+      "id": "f1a8cfcd-4c33-4e5f-8d45-4c54b5be3c51",
+      "name": "Fetch Jobs (Apify)",
+      "credentials": {
+        "apifyApi": {
+          "id": "REPLACE_ME",
+          "name": "Apify account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 5,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -260,
+        -140
+      ],
+      "id": "f991b5fc-f02e-4cf1-a8f6-7fd9497075f7",
+      "name": "Batch Loop"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "documentURL": "REPLACE_ME_GOOGLE_DOC_URL_BASE_RESUME"
+      },
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        -20,
+        -140
+      ],
+      "id": "5eafc8aa-ef2e-4d48-9f3f-5837c5d4a542",
+      "name": "Load Base Resume (GDoc)",
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Docs account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n task runner sandbox disallows require('crypto').\n// Pure-JS stable hash (FNV-1a 32-bit) to generate a deterministic jobKey.\n\nfunction norm(s) {\n  return (s || '')\n    .toString()\n    .trim()\n    .toLowerCase()\n    .replace(/\\s+/g, ' ');\n}\n\nfunction fnv1a32(str) {\n  let hash = 0x811c9dc5; // offset basis\n  for (let i = 0; i < str.length; i++) {\n    hash ^= str.charCodeAt(i);\n    // hash *= 16777619 (with 32-bit overflow)\n    hash = (hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24))) >>> 0;\n  }\n  return ('00000000' + hash.toString(16)).slice(-8);\n}\n\nconst job = $json;\nconst companyName = norm(job.company?.name || job.company?.universalName);\nconst title = norm(job.title);\nconst loc = norm(job.location);\nconst url = norm(job.linkedinUrl || job.url);\n\nconst keyRaw = `${companyName}|${title}|${loc}|${url}`;\nconst jobKey = fnv1a32(keyRaw);\n\nreturn [{\n  jobKey,\n  runAt: new Date().toISOString(),\n  title: job.title,\n  company: job.company?.name || job.company?.universalName,\n  companyUniversal: job.company?.universalName,\n  location: job.location,\n  workplaceType: job.workplaceType,\n  employmentType: job.employmentType,\n  postedDate: job.postedDate,\n  url: job.linkedinUrl || job.url,\n  descriptionText: job.descriptionText || '',\n  source: 'apify:linkedin-job-search'\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        -140
+      ],
+      "id": "a745ed5f-679a-4bb3-b4c5-8d3f3a3b6f2a",
+      "name": "Normalize + jobKey"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=你是一個「求職職缺分流器」(job triage engine)。\n\n目標：根據【履歷】與【JD】做出可解釋的評分，並給出下一步行動。\n\n輸入：\n- 履歷（base resume）: {{ $('Load Base Resume (GDoc)').item.json.content }}\n- JD: {{ $json.descriptionText }}\n- 職缺基本資訊: title={{ $json.title }}, company={{ $json.company }}, location={{ $json.location }}, workplaceType={{ $json.workplaceType }}, url={{ $json.url }}\n\n規則：\n1) 只輸出 JSON（不要多餘文字），且必須符合 schema。\n2) matchScore 為 0~100 的整數。\n3) action 僅能是 APPLY / REVIEW / SKIP。\n4) mustHaveHits / mustHaveMisses 用陣列列出（每個元素 2~10 個字，精簡）。\n5) riskFlags：若發現疑慮（例如 JD 太空泛/外包/非預期語言/不明薪資/不明職級）請列出。\n6) 如果 matchScore >= 75，action 優先給 APPLY；如果 60~74，給 REVIEW；低於 60 給 SKIP。\n\n輸出欄位：\n- matchScore\n- action\n- oneLineRationale\n- mustHaveHits\n- mustHaveMisses\n- riskFlags\n- tailoredSummary（用於後續履歷摘要，3~5 句）\n",
+        "hasOutputParser": true,
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        500,
+        -140
+      ],
+      "id": "3b086bf5-3c3d-4d97-a3d7-39863a7fc6c4",
+      "name": "LLM - Triage & Score"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        500,
+        80
+      ],
+      "id": "7eb9a13e-9c2b-4f75-832d-0c0d0d5db3c1",
+      "name": "Gemini (Scoring)",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "REPLACE_ME",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"matchScore\": { \"type\": \"integer\", \"minimum\": 0, \"maximum\": 100 },\n    \"action\": { \"type\": \"string\", \"enum\": [\"APPLY\", \"REVIEW\", \"SKIP\"] },\n    \"oneLineRationale\": { \"type\": \"string\" },\n    \"mustHaveHits\": { \"type\": \"array\", \"items\": { \"type\": \"string\" } },\n    \"mustHaveMisses\": { \"type\": \"array\", \"items\": { \"type\": \"string\" } },\n    \"riskFlags\": { \"type\": \"array\", \"items\": { \"type\": \"string\" } },\n    \"tailoredSummary\": { \"type\": \"string\" }\n  },\n  \"required\": [\n    \"matchScore\",\n    \"action\",\n    \"oneLineRationale\",\n    \"mustHaveHits\",\n    \"mustHaveMisses\",\n    \"riskFlags\",\n    \"tailoredSummary\"\n  ]\n}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        690,
+        80
+      ],
+      "id": "1c4c7f9a-88e2-4a59-a4a7-c5d2a8c5c03a",
+      "name": "Parser - Triage JSON"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "2b8d1b1d-02d8-4a50-8ed7-7c2c8d7cd1f3",
+              "leftValue": "={{ $json.content.parts[0].text.parseJson()[0].content.matchScore }}",
+              "rightValue": 75,
+              "operator": {
+                "type": "number",
+                "operation": "largerEqual"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.3,
+      "position": [
+        760,
+        -140
+      ],
+      "id": "b3947c2a-36f2-4c47-82d7-2ea9d47f6c17",
+      "name": "Gate: matchScore ≥ 75"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=你是履歷改寫助手。請用「base resume」的事實，不要捏造。依據 JD 只做措辭與重點調整。\n\n輸入：\n- base resume: {{ $('Load Base Resume (GDoc)').item.json.content }}\n- tailoredSummary（由 triage 產生）: {{ $('LLM - Triage & Score').item.json.content.parts[0].text.parseJson()[0].content.tailoredSummary }}\n- JD: {{ $json.descriptionText }}\n- job title: {{ $json.title }}\n- company: {{ $json.company }}\n\n輸出要求：\n1) 只輸出 HTML，第一個字元必須是 <html>\n2) 不要輸出 ```\n3) 最上方加 3~5 行 Professional Summary（以 tailoredSummary 為核心）\n4) 保留原本公司經歷與時間線，不要改公司名/職稱/年資\n5) 允許調整 bullet 順序與措辭，使其貼合 JD\n",
+        "options": {
+          "batching": {
+            "batchSize": 3
+          }
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1040,
+        -140
+      ],
+      "id": "5a6c6a8d-2a17-4e1a-9bcb-8fbc64b9c1d1",
+      "name": "LLM - Build Resume Variant (HTML)"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4",
+          "mode": "list",
+          "cachedResultName": "gpt-4"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        1040,
+        80
+      ],
+      "id": "a3c4b78e-0c4d-4c26-9d1b-3fd35ac7c4ef",
+      "name": "OpenAI (Resume HTML)",
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_ME",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "folderId": "REPLACE_ME_GOOGLE_DRIVE_FOLDER_ID",
+        "title": "=resume_v2_{{ $('Normalize + jobKey').item.json.title }}_{{ $('Normalize + jobKey').item.json.company }}_{{ $('Normalize + jobKey').item.json.jobKey }}"
+      },
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        -140
+      ],
+      "id": "43c3402b-5d2f-4f9e-a2b9-9ccad8f2f045",
+      "name": "Create Resume Doc (GDoc)",
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Docs account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://www.googleapis.com/upload/drive/v3/files/{{ $json.id }}?uploadType=media",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDocsOAuth2Api",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "{\n  \"Content-Type\": \"text/html\"\n}",
+        "sendBody": true,
+        "contentType": "raw",
+        "body": "={{ $('LLM - Build Resume Variant (HTML)').item.json.output }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1500,
+        -140
+      ],
+      "id": "e0ffb1e8-9b40-41f8-9c8e-2b3ab8f19ad2",
+      "name": "Write HTML into GDoc",
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Docs account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_ME_GOOGLE_SHEET_ID",
+          "mode": "list",
+          "cachedResultName": "Job Tracker DB",
+          "cachedResultUrl": "REPLACE_ME_GOOGLE_SHEET_URL"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "REPLACE_ME_SHEET_NAME_OR_GID",
+          "mode": "list",
+          "cachedResultName": "工作表1",
+          "cachedResultUrl": "REPLACE_ME_GOOGLE_SHEET_URL#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "jobKey": "={{ $('Normalize + jobKey').item.json.jobKey }}",
+            "runAt": "={{ $('Normalize + jobKey').item.json.runAt }}",
+            "title": "={{ $('Normalize + jobKey').item.json.title }}",
+            "company": "={{ $('Normalize + jobKey').item.json.company }}",
+            "location": "={{ $('Normalize + jobKey').item.json.location }}",
+            "workplaceType": "={{ $('Normalize + jobKey').item.json.workplaceType }}",
+            "postedDate": "={{ $('Normalize + jobKey').item.json.postedDate }}",
+            "url": "={{ $('Normalize + jobKey').item.json.url }}",
+            "matchScore": "={{ $('LLM - Triage & Score').item.json.content.parts[0].text.parseJson()[0].content.matchScore }}",
+            "action": "={{ $('LLM - Triage & Score').item.json.content.parts[0].text.parseJson()[0].content.action }}",
+            "oneLineRationale": "={{ $('LLM - Triage & Score').item.json.content.parts[0].text.parseJson()[0].content.oneLineRationale }}",
+            "mustHaveHits": "={{ $('LLM - Triage & Score').item.json.content.parts[0].text.parseJson()[0].content.mustHaveHits.join(', ') }}",
+            "mustHaveMisses": "={{ $('LLM - Triage & Score').item.json.content.parts[0].text.parseJson()[0].content.mustHaveMisses.join(', ') }}",
+            "riskFlags": "={{ $('LLM - Triage & Score').item.json.content.parts[0].text.parseJson()[0].content.riskFlags.join(', ') }}",
+            "resumeDocId": "={{ $('Create Resume Doc (GDoc)').item.json.id }}",
+            "resumeDocUrl": "=https://docs.google.com/document/d/{{ $('Create Resume Doc (GDoc)').item.json.id }}/edit"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1720,
+        -140
+      ],
+      "id": "d8910c31-5961-4e03-baaa-8cc2dfc88d25",
+      "name": "Log to Job Tracker (Sheet)",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_ME_GOOGLE_SHEET_ID",
+          "mode": "list",
+          "cachedResultName": "Job Tracker DB",
+          "cachedResultUrl": "REPLACE_ME_GOOGLE_SHEET_URL"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "REPLACE_ME_SHEET_NAME_OR_GID",
+          "mode": "list",
+          "cachedResultName": "工作表1",
+          "cachedResultUrl": "REPLACE_ME_GOOGLE_SHEET_URL#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "jobKey": "={{ $('Normalize + jobKey').item.json.jobKey }}",
+            "runAt": "={{ $('Normalize + jobKey').item.json.runAt }}",
+            "title": "={{ $('Normalize + jobKey').item.json.title }}",
+            "company": "={{ $('Normalize + jobKey').item.json.company }}",
+            "location": "={{ $('Normalize + jobKey').item.json.location }}",
+            "workplaceType": "={{ $('Normalize + jobKey').item.json.workplaceType }}",
+            "postedDate": "={{ $('Normalize + jobKey').item.json.postedDate }}",
+            "url": "={{ $('Normalize + jobKey').item.json.url }}",
+            "matchScore": "={{ $('LLM - Triage & Score').item.json.content.parts[0].text.parseJson()[0].content.matchScore }}",
+            "action": "={{ $('LLM - Triage & Score').item.json.content.parts[0].text.parseJson()[0].content.action }}",
+            "oneLineRationale": "={{ $('LLM - Triage & Score').item.json.content.parts[0].text.parseJson()[0].content.oneLineRationale }}",
+            "mustHaveHits": "={{ $('LLM - Triage & Score').item.json.content.parts[0].text.parseJson()[0].content.mustHaveHits.join(', ') }}",
+            "mustHaveMisses": "={{ $('LLM - Triage & Score').item.json.content.parts[0].text.parseJson()[0].content.mustHaveMisses.join(', ') }}",
+            "riskFlags": "={{ $('LLM - Triage & Score').item.json.content.parts[0].text.parseJson()[0].content.riskFlags.join(', ') }}",
+            "resumeDocId": "={{ '' }}",
+            "resumeDocUrl": "={{ '' }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1040,
+        -340
+      ],
+      "id": "7d6b45c9-705c-4e35-b0d2-2fdbf76a954c",
+      "name": "Log (No Resume Generated)",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## How to use (SANITIZED version)\n\n### 1) 先填入你自己的資源\n請把以下 REPLACE_ME 改成你自己的：\n- Load Base Resume (GDoc) → documentURL\n- Create Resume Doc (GDoc) → folderId\n- Log to Job Tracker / Log (No Resume Generated) → spreadsheetId / sheetName\n\n### 2) Credentials\n匯入後每個人都需要自己建立 credentials：\n- Apify\n- Google Docs OAuth\n- Google Sheets OAuth\n- Gemini API\n- OpenAI API\n\n### 3) 產生履歷門檻\n- matchScore ≥ 75 才會產生客製履歷並寫入 Google Doc\n- 否則只會寫入 Sheet\n\n### 4) 常見問題\n- Code node 禁用 crypto：本版 jobKey 使用純 JS FNV-1a\n- Gemini 400 schema error：本版 parser schema 已補齊 array items\n"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -720,
+        -420
+      ],
+      "id": "fc9c7b31-fb9c-4c0d-a0d1-9d7b2fb981b1",
+      "name": "Notes (How to use)",
+      "color": 4,
+      "width": 760,
+      "height": 340
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Start (Manual)": {
+      "main": [
+        [
+          {
+            "node": "Fetch Jobs (Apify)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Jobs (Apify)": {
+      "main": [
+        [
+          {
+            "node": "Batch Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Batch Loop": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Load Base Resume (GDoc)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Base Resume (GDoc)": {
+      "main": [
+        [
+          {
+            "node": "Normalize + jobKey",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize + jobKey": {
+      "main": [
+        [
+          {
+            "node": "LLM - Triage & Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM - Triage & Score": {
+      "main": [
+        [
+          {
+            "node": "Gate: matchScore ≥ 75",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gate: matchScore ≥ 75": {
+      "main": [
+        [
+          {
+            "node": "LLM - Build Resume Variant (HTML)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log (No Resume Generated)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM - Build Resume Variant (HTML)": {
+      "main": [
+        [
+          {
+            "node": "Create Resume Doc (GDoc)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Resume Doc (GDoc)": {
+      "main": [
+        [
+          {
+            "node": "Write HTML into GDoc",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write HTML into GDoc": {
+      "main": [
+        [
+          {
+            "node": "Log to Job Tracker (Sheet)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini (Scoring)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "LLM - Triage & Score",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      }
+    },
+    "Parser - Triage JSON": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "LLM - Triage & Score",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI (Resume HTML)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "LLM - Build Resume Variant (HTML)",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "00000000-0000-0000-0000-000000000000",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "id": "linkedin-job-triage-sanitized-v2287",
+  "tags": [
+    {
+      "id": "JobSearch",
+      "name": "JobSearch"
+    },
+    {
+      "id": "Triage",
+      "name": "Triage"
+    }
+  ]
+}
