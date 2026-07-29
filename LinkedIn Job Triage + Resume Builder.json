@@ -1,6 +1,6 @@
 
 {
-  "name": "LinkedIn Job Triage + Resume Builder (SANITIZED - Safe to Share)",
+  "name": "LinkedIn Job Triage + Resume Builder",
   "nodes": [
     {
       "parameters": {},
@@ -21,7 +21,7 @@
           "value": "zn01OAlzP853oqn4Z",
           "mode": "list",
           "cachedResultName": "Advanced Linkedin Job Scraper (No Cookies) (harvestapi/linkedin-job-search)",
-          "cachedResultUrl": "https://console.apify.com/actors/zn01OAlzP853oqn4Z/input"
+          "cachedResultUrl": "Create your own"
         },
         "customBody": "{\n  \"easyApply\": true,\n  \"employmentType\": [\"full-time\", \"contract\"],\n  \"experienceLevel\": [\"entry\"],\n  \"jobTitles\": [\"AI\", \"Project Coordinator\", \"Automation\", \"Workflow\", \"Consultant\"],\n  \"locations\": [\"Canada\"],\n  \"maxItems\": 10,\n  \"sortBy\": \"date\",\n  \"under10Applicants\": false,\n  \"workplaceType\": [\"remote\", \"hybrid\"]\n}"
       },
